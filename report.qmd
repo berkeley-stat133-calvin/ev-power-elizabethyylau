@@ -1,34 +1,190 @@
 ---
 title: "EV Power - Lab 4 Project Report"
 format: typst
+execute:
+ echo: false
+ message: false
+ warning: false
 ---
 
-# Example Solution 1
 
 ## **Part 0: libraries**
 
-```{r}
 
+```{r}
+library(tidyverse)
+library(maps)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+library(scales)
 ```
+
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+
+Chosen Question: In 2023, are EV registrations concentrated in states with higher renewable energy usage?
+
 
 ## **Part 2: Data Preparation and Cleaning**
-
+I worked specifically with the datasets ev-registrations-by-state.csv and total-use-2023.csv.csv. I prepared the dataset ev_registrations by making one column for states and deleting all non-numeric characters in the count column, which I named count_EVs. I cleaned total-use-2023 in the next section. Below is ev_registrations after cleaning.
 ```{r}
+ev_registrations <- read.csv("data/ev-registrations-by-state-2023.csv")
+#rename columns
+colnames(ev_registrations) <- c("state", "count_EVs")
 
+
+#remove blank row and first row with names, also remove the total row at the end
+ev_registrations <- ev_registrations |> slice(-(1:2))
+ev_registrations <- ev_registrations |> slice(-52)
+
+
+#get rid of non numeric characters in the ev count column
+ev_registrations <- ev_registrations |>
+ mutate(
+   count_slice = stringr::str_extract(count_EVs, "\\d.*\\d|\\d"),
+   count_digits = count_slice |>
+     stringr::str_remove_all("\\D") |>
+     dplyr::na_if(""),
+   count_EVs = as.double(count_digits)
+ ) |>
+ select(state, count_EVs)
+
+
+
+
+total_energy_2023 <- read.csv("data/total-use-2023.csv")
+rownames(total_energy_2023) <- c("coal", "natural_gas", "petroleum", "nuclear", "renewable")
+total_energy_2023 <- total_energy_2023 |> select(-1)
+total_energy_2023 <- total_energy_2023 |> select(-52)
+
+
+head(ev_registrations)
 ```
+
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
-
+I pivoted total_energy_2023 so that there is one row for each state, and I added a column for the renewable energy percentage for each state. Then, I renamed both total_energy_2023 and ev_registrations to have all lowercase state names, and then I used full join to combine them into a singular data frame called energy_and_registrations. Below is total_energy_2023 and energy_and_registrations.
 ```{r}
+total_energy_2023 <- total_energy_2023 |>
+ as_tibble(rownames = "energy") |>
+ pivot_longer(-energy, names_to = "state", values_to = "value") |>
+ pivot_wider(names_from = energy, values_from = value)
 
+
+total_energy_2023 <- total_energy_2023 |>
+ mutate(
+   total_energy = rowSums(across(-state), na.rm = TRUE),
+   renewable_pct = if_else(total_energy > 0, 100 * renewable / total_energy,NA_real_)
+ ) |>
+ select(-total_energy) |>
+ mutate(renewable_pct = round(renewable_pct, 1))
+
+
+total_energy_2023[, 1] <- tolower(ev_registrations[, 1])
+ev_registrations[, 1] <- tolower(ev_registrations[, 1])
+
+
+head(total_energy_2023)
+energy_and_registrations <- full_join(ev_registrations, total_energy_2023, by = "state") |> select("state", "renewable_pct", "count_EVs")
+head(energy_and_registrations)
 ```
+
 
 ## **Part 4: Mapping Visualization**
+I mapped the United States with the color of each state corresponding to renewable energy percentage, and a bubble on each state whose size corresponds to how many EV registrations there are. I also got rid of Alaska and Hawaii because the map doesn't include pictures for those states.
+```{r fig.width=8, fig.height=5, fig.align='center'}
+energy_and_registrations <- energy_and_registrations |>
+ filter(!state %in% c("alaska", "hawaii"))
 
-```{r}
+
+us_map <- map_data("state")
+choro_df <- us_map %>%
+ left_join(energy_and_registrations, by = c("region" = "state"))
+
+
+centers <- data.frame(
+ state = tolower(state.name),
+ long  = state.center$x,
+ lat   = state.center$y,
+ stringsAsFactors = FALSE
+) |>
+ left_join(energy_and_registrations, by = "state")
+
+
+ev_breaks  <- c(1e3, 1e4, 1e5, 1e6)
+max_ren    <- ceiling(max(choro_df$renewable_pct, na.rm = TRUE) / 10) * 10
+ren_breaks <- seq(0, max_ren, by = 10)
+
+
+ggplot() +
+ theme_void(base_size = 14) +
+ theme(
+   plot.background   = element_rect(fill = "#f7f7f7", color = NA),
+   legend.position   = "bottom",
+   legend.box        = "horizontal",
+   legend.spacing.x  = unit(12, "pt"),
+   legend.spacing.y  = unit(6,  "pt"),
+   legend.box.margin = margin(t = 6, r = 6, b = 6, l = 6),
+   legend.title      = element_text(face = "bold", size = 11),
+   legend.text       = element_text(size = 9),
+   legend.key        = element_rect(fill = "white", color = NA),
+   legend.background = element_rect(fill = "white", color = NA),
+   plot.title        = element_text(size = 20, face = "bold", hjust = 0),
+   plot.subtitle     = element_text(size = 12, hjust = 0),
+   plot.margin       = margin(t = 10, r = 20, b = 10, l = 20)
+ ) +
+
+
+ geom_polygon(
+   data = choro_df,
+   aes(x = long, y = lat, group = group, fill = renewable_pct),
+   color = "white", linewidth = 0.2
+ ) +
+ scale_fill_viridis_c(
+   name   = "Renewables (%)",
+   option = "C",
+   limits = c(0, max_ren),
+   breaks = ren_breaks,
+   labels = paste0(ren_breaks, "%"),
+   na.value = "grey90",
+   guide = guide_colorbar(
+     title.position = "top",
+     barheight = unit(4, "pt"),
+     barwidth  = unit(80, "pt"),
+     direction = "horizontal"
+   )
+ ) +
+
+
+ geom_point(
+   data = centers,
+   aes(x = long, y = lat, size = count_EVs),
+   shape = 21, fill = "white", color = "black", alpha = 0.8, stroke = 0.4
+ ) +
+ scale_size_area(
+   name   = "EVs (bubble area)",
+   max_size = 16,        
+   breaks = ev_breaks,
+   labels = label_number(scale_cut = cut_short_scale()),
+   guide = guide_legend(
+     title.position = "top",
+     direction = "horizontal",
+     override.aes = list(fill = "white", alpha = 0.8, stroke = 0.4)
+   )
+ ) +
+
+
+ coord_map("albers", lat0 = 29.5, lat1 = 45.5) +
+ labs(
+   title = "Renewable Energy and EV Registrations by State",
+   caption = "Year: 2023"
+ )
+
 
 ```
+
+
+## **Part 5: Analysis**
+There is not really a correlation between renewable energy percentage and EV registrations. South Dakota has the highest renewable energy percentage, but it has a small number of EV registrations, and Idaho also has a high renewable energy percentage but small number of EV registrations. Texas and Florida have a low renewable energy percentage but a large number of EV registrations. Some of the lighter states have higher EV registrations, such as California, Washington, Oregon, Illinois,  Virginia, and Massachusetts. To answer the research question, this map shows that renewable energy share and EV registration are slightly correlated.
